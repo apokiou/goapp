@@ -65,7 +65,7 @@ func (s *Server) Start() error {
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil {
 			if err != http.ErrServerClosed {
-				panic(err)
+				log.Printf("Error: %v", err)
 			}
 		}
 	}()

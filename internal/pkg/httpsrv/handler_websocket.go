@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"goapp/internal/pkg/watcher"
 
 	"github.com/gorilla/websocket"
 )
+
+type Response struct {
+	Iteration int    `json:"iteration"`
+	Value     string `json:"value"`
+	Conn      string `json:"conn"`
+}
 
 func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Create and start a watcher.
@@ -37,6 +44,13 @@ func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = c.Close() }()
 
+	strChan := make(chan string)
+
+	gen := New(strChan)
+	gen.Start()
+
+	defer gen.Stop() // Ensure cleanup
+
 	log.Printf("websocket started for watcher %s\n", watch.GetWatcherId())
 	defer func() {
 		log.Printf("websocket stopped for watcher %s\n", watch.GetWatcherId())
@@ -49,8 +63,14 @@ func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 	doneCh := make(chan struct{})
 	defer close(doneCh)
 
+	var messageCount int
+	var wg sync.WaitGroup
+	var messageCountMutex sync.Mutex
+	wg.Add(1)
+
 	go func() {
 		defer close(readDoneCh)
+		defer wg.Done()
 		for {
 			select {
 			default:
@@ -61,6 +81,10 @@ func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					return
 				}
+				messageCountMutex.Lock()
+				messageCount++
+				messageCountMutex.Unlock()
+
 				var m watcher.CounterReset
 				if err := json.Unmarshal(p, &m); err != nil {
 					log.Printf("failed to unmarshal message: %v\n", err)
@@ -74,11 +98,23 @@ func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	defer func() {
+		log.Printf("websocket stopped for watcher %s, received %d messages\n", watch.GetWatcherId(), messageCount)
+	}()
 
 	for {
 		select {
 		case cv := <-watch.Recv():
-			data, _ := json.Marshal(cv)
+			hexValue := fmt.Sprintf("%X", cv)
+			data, _ := json.Marshal(struct {
+				Iteration int    `json:"iteration"`
+				Value     string `json:"value"`
+				Conn      string `json:"conn"`
+			}{
+				Iteration: cv.Iteration,
+				Value:     hexValue,
+				Conn:      c.RemoteAddr().String(),
+			})
 			err = c.WriteMessage(websocket.TextMessage, data)
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -87,9 +123,12 @@ func (s *Server) handlerWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-readDoneCh:
+			wg.Wait()
 			return
 		case <-s.quitChannel:
+			wg.Wait()
 			return
 		}
 	}
+
 }

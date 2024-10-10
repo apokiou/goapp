@@ -6,7 +6,7 @@ all: clean goapp
 .PHONY: goapp
 goapp:
 	mkdir -p bin
-	go build -o bin/goapp/cmd/server ./main.go
+	go build -o bin ./...
 
 .PHONY: clean
 clean:
